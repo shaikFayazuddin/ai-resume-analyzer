@@ -2,19 +2,72 @@ import React, { type FormEvent } from 'react'
 import Navbar from '~/components/Navbar'
 import { useState } from 'react'
 import FileUploader from '~/components/FileUploader'
+import { usePuterStore } from '~/lib/puter'
+import { useNavigate } from 'react-router'
+import { convertPdfToImage } from '~/lib/PdfToImage'
+import { generateUUID } from '~/lib/utils'
+import { prepareInstructions } from '../../constants/index'
 
 const upload = () => {
+  const {fs, ai, kv , auth, isLoading} = usePuterStore()
   const [isProcessing, setIsProcessing] = useState(false)
   const [statusText, setStatusText] = useState('')
   const [file, setFile] = useState<File | null>(null);
+  const navigate = useNavigate()
 
   const handleFileSelect = (file: File | null) => {
         setFile(file)
     }
+  const handleAnalyze = async ({companyName,jobTitle,jobDescription,file}:{companyName : string,jobTitle : string,jobDescription : string,file : File})=>{
+    setIsProcessing(true)
+    setStatusText("Uploading your file....")
+    const uploadedFile = await fs.upload([file])
+    if(!uploadedFile) return setStatusText("Error : Failed to upload the file" )
+    setStatusText("Converting to Image......")
+    const imageFile = await convertPdfToImage(file)
+    console.log(imageFile)
+    if(!imageFile.file) return setStatusText("Error : Failed to convert PDF to Image")
+    setStatusText("Uploading the Image.....")
+    const uploadedImage = await fs.upload([imageFile.file])
+    if(!uploadedImage) return setStatusText("Error : Failed to Upload the Image")
+    setStatusText("Preparing the Data....")
+    const uuid = generateUUID()
+    const data = {
+      id : uuid,
+      resumePath : uploadedFile.path,
+      imagePath : uploadedImage.path,
+      companyName : companyName,
+      jobDescription : jobDescription,
+      jobTitle : jobTitle,
+      feedback : ''
+    }
 
+    await kv.set(`resume:${uuid}`, JSON.stringify(data))
+
+    setStatusText("Analyzing...")
+    const feedback = await ai.feedback(uploadedFile.path, prepareInstructions({jobTitle,jobDescription}))
+
+    if(!feedback) return setStatusText("Error : Failed to analyze the resume")
+    
+    const feedbackText = typeof feedback.message.content === 'string' ? feedback.message.content : feedback.message.content[0].text
+
+    data.feedback = JSON.parse(feedbackText)
+    await kv.set(`resume:${uuid}`, JSON.stringify(data))
+    setStatusText("Analysis Completed,redirecting....")
+
+    console.log(data)
+  }
   const handleSubmit = (e:FormEvent<HTMLFormElement>)=>{
-    console.log(file, "burt")
     e.preventDefault()
+    const form = e.currentTarget.closest("form")
+    if(!form) return 
+    const formData = new FormData(form)
+    const companyName = formData.get('company-name') as string
+    const jobTitle = formData.get('job-title') as string
+    const jobDescription = formData.get('job-description') as string
+
+    if(!file) return
+    handleAnalyze({companyName,jobTitle,jobDescription,file})
   }
 
   return (
